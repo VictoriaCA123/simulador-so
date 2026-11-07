@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 
 #include <cerrno>
+#include <climits>
 #include <fstream>
 #include <iostream>
 #include <vector>
@@ -102,12 +103,22 @@ static void cmd_ps(const Args& a) {
 
 static void cmd_pcb(const Args& a) {
     if (!check_argc(a, 2, 2, "pcb <PID>")) return;
+
     int pid = 0;
-    if (parse_int(a[1], 1, MAX_PROCESSES, pid) != ParseStatus::OK) {
+    ParseStatus st = parse_int(a[1], INT_MIN, INT_MAX, pid);
+    bool es_negativo = !a[1].empty() && a[1][0] == '-';
+
+    // Caso 1: no es un entero, o es <= 0  
+    if (st == ParseStatus::NOT_INTEGER ||
+        (st == ParseStatus::OK && pid <= 0) ||
+        (st == ParseStatus::OUT_OF_RANGE && es_negativo)) {
         err_type("El PID debe ser un número entero positivo.");
         return;
     }
-    if (!report_pcb(pid)) err_param("No existe un proceso con PID " + std::to_string(pid) + ".");
+    // Caso 2: es un entero positivo, pero no existe (o es tan grande que no cabe en int)
+    if (st == ParseStatus::OUT_OF_RANGE || !report_pcb(pid)) {
+        err_param("No existe un proceso con PID " + a[1] + ".");
+    }
 }
 
 static void cmd_set_sched(const Args& a) {
