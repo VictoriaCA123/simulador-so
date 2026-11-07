@@ -12,8 +12,12 @@
 #include "cli.h"
 
 #include <sys/stat.h>
+#include <unistd.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cerrno>
+#include <csignal>
 #include <climits>
 #include <fstream>
 #include <iostream>
@@ -108,7 +112,7 @@ static void cmd_pcb(const Args& a) {
     ParseStatus st = parse_int(a[1], INT_MIN, INT_MAX, pid);
     bool es_negativo = !a[1].empty() && a[1][0] == '-';
 
-    // Caso 1: no es un entero, o es <= 0  
+    // Caso 1: no es un entero, o es <= 0  -> error de TIPO
     if (st == ParseStatus::NOT_INTEGER ||
         (st == ParseStatus::OK && pid <= 0) ||
         (st == ParseStatus::OUT_OF_RANGE && es_negativo)) {
@@ -198,21 +202,52 @@ static void cmd_stats(const Args& a) {
 static void cmd_help(const Args& a) {
     if (!check_argc(a, 1, 1, "help")) return;
     std::cout <<
-        "Comandos disponibles:\n"
-        "  create <nombre> <burst> [prioridad 1-5]  Crea un proceso\n"
-        "  load <archivo>                           Carga procesos desde una traza\n"
-        "  ps                                       Tabla de procesos\n"
-        "  pcb <PID>                                Detalle del PCB\n"
-        "  set_sched <RR|SRTF> [quantum]            Cambia el planificador\n"
-        "  set_speed <ms>                           Milisegundos por tick (50-5000)\n"
-        "  start | pause                            Inicia / pausa la CPU\n"
-        "  gantt | stats                            Diagrama de Gantt / métricas\n"
-        "  help | exit                              Ayuda / salir\n";
+        "==================================================================\n"
+        "              MANUAL RAPIDO DEL SIMULADOR DE KERNEL\n"
+        "==================================================================\n"
+        "PROCESOS\n"
+        "  create <nombre> <burst> [prioridad]\n"
+        "      Crea un proceso. nombre: 1-" << MAX_NAME_LEN << " caracteres (letras, digitos, _ - .)\n"
+        "      burst: entero 1-" << MAX_BURST << "   prioridad: " << MIN_PRIORITY << "-" << MAX_PRIORITY
+                 << " (defecto " << DEFAULT_PRIORITY << ")\n"
+        "      Ej: create P1 5 2\n"
+        "  load <archivo>\n"
+        "      Carga procesos desde un archivo. Una linea por proceso:\n"
+        "      NOMBRE, BURST, PRIORIDAD, LLEGADA   (# = comentario)\n"
+        "      Ej: load tests/workload_test.txt\n"
+        "\n"
+        "CONSULTA\n"
+        "  ps            Tabla con el estado de todos los procesos\n"
+        "  pcb <PID>     Detalle del PCB de un proceso.  Ej: pcb 1\n"
+        "  gantt         Diagrama de Gantt hasta el instante actual\n"
+        "  stats         Tiempos promedio (espera, retorno, respuesta) y uso de CPU\n"
+        "\n"
+        "PLANIFICACION\n"
+        "  set_sched RR [quantum]   Round Robin. quantum: 1-" << MAX_QUANTUM
+                 << " (defecto " << DEFAULT_QUANTUM << ")\n"
+        "  set_sched SRTF           Shortest Remaining Time First (apropiativo)\n"
+        "  set_speed <ms>           Duracion real de un tick: " << MIN_SPEED_MS << "-" << MAX_SPEED_MS
+                 << " ms (defecto " << DEFAULT_SPEED_MS << ")\n"
+        "  start                    Inicia o reanuda la CPU simulada\n"
+        "  pause                    Pausa la CPU para inspeccionar el sistema\n"
+        "\n"
+        "GENERAL\n"
+        "  help          Muestra este manual\n"
+        "  exit          Detiene los hilos, libera recursos y sale (tambien Ctrl+D)\n"
+        "\n"
+        "Notas: los comandos van en minusculas. El planificador puede cambiarse\n"
+        "en caliente: pause -> set_sched SRTF -> start.\n"
+        "==================================================================\n";
 }
 
 static void cmd_exit(const Args& a) {
     if (!check_argc(a, 1, 1, "exit")) return;
     g_cli_exit = true;
+}
+
+static void cmd_gui(const Args& a) {
+    if (!check_argc(a, 1, 1, "gui")) return;
+    std::cout << "[INFO]: El comando 'gui' (bonus opcional) no esta disponible en esta version.\n";
 }
 
 /* ============================ Tabla de despacho ============================ */
@@ -227,6 +262,7 @@ static const Command COMMANDS[] = {
     {"pcb", cmd_pcb},       {"set_sched", cmd_set_sched}, {"set_speed", cmd_set_speed},
     {"start", cmd_start},   {"pause", cmd_pause},         {"gantt", cmd_gantt},
     {"stats", cmd_stats},   {"help", cmd_help},           {"exit", cmd_exit},
+    {"gui", cmd_gui},
 };
 
 bool cli_execute_line(const std::string& line) {
@@ -241,6 +277,18 @@ bool cli_execute_line(const std::string& line) {
         if (args[0] == c.name) {
             c.handler(args);
             return !g_cli_exit;
+        }
+    }
+
+    // No coincide exactamente: ¿es un comando válido escrito con mayúsculas?
+    std::string lower = args[0];
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    for (const Command& c : COMMANDS) {
+        if (lower == c.name) {
+            std::cout << "[ERROR]: Comando '" << args[0] << "' no reconocido. ¿Quiso decir '"
+                      << c.name << "'? Los comandos van en minúsculas.\n";
+            return true;
         }
     }
     std::cout << "[ERROR]: Comando '" << args[0] << "' no reconocido. Escriba 'help'.\n";
@@ -406,7 +454,35 @@ int cli_load_workload(const std::string& path) {
     return static_cast<int>(pids.size());
 }
 
+/* ================================ Señales ================================ */
+
+/**
+ * Manejador de Ctrl+C (SIGINT) y Ctrl+\ (SIGQUIT): en vez de matar el programa
+ * avisa cómo salir. Solo usa write(), que es seguro dentro de un manejador
+ * de señales (cout y printf NO lo son).
+ */
+static void on_interrupt(int /*signo*/) {
+    const char msg[] = "\n[INFO]: Para salir use 'exit' (o Ctrl+D).\n> ";
+    ssize_t ignored = write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+    (void)ignored;
+}
+
+/** Instala los manejadores de señales del proceso. */
+static void cli_install_signal_handlers() {
+    struct sigaction sa;
+    sa.sa_handler = on_interrupt;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;   // getline() continúa leyendo tras la señal
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGQUIT, &sa, nullptr);
+
+    // Si la salida va a un pipe que se cierra (./simulador | head), no morir.
+    signal(SIGPIPE, SIG_IGN);
+}
+
 void* cli_thread_main(void* /*arg*/) {
+    cli_install_signal_handlers();
+
     std::string line;
     while (true) {
         std::cout << "> " << std::flush;
