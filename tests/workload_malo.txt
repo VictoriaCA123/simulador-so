@@ -1,0 +1,8 @@
+# archivo con errores a proposito
+Job_OK, 4, 2, 0
+Job_Corto, 4
+Job_Largo, 4, 2, 0, 9
+Job_ComaFinal, 4, 2, 0,
+
+   Job_Espacios ,  3 , 1 , 2   
+,,,

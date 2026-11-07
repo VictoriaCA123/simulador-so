@@ -234,6 +234,23 @@ bool cli_execute_line(const std::string& line) {
     return true;
 }
 
+/** Separa una línea por comas y aplica trim() a cada campo.
+ *  Siempre devuelve (número de comas + 1) campos, incluso si alguno está vacío. */
+static Args split_csv(const std::string& line) {
+    Args fields;
+    size_t start = 0;
+    while (true) {
+        size_t comma = line.find(',', start);
+        if (comma == std::string::npos) {            // ya no hay más comas
+            fields.push_back(trim(line.substr(start)));
+            break;
+        }
+        fields.push_back(trim(line.substr(start, comma - start)));
+        start = comma + 1;                           // seguir después de la coma
+    }
+    return fields;
+}
+
 int cli_load_workload(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) return -1;
@@ -248,7 +265,14 @@ int cli_load_workload(const std::string& path) {
 
         if (line.empty() || line[0] == '#') continue;   // vacía o comentario
 
-        std::cout << "[DEBUG] linea " << line_no << ": '" << line << "'\n";
+        Args f = split_csv(line);
+        if (f.size() != 4) {
+            std::cout << "[ERROR DE FORMATO]: Linea " << line_no << " tiene " << f.size()
+                      << " campo(s), se esperaban 4. Se omite.\n";
+            continue;
+        }
+        std::cout << "[DEBUG] linea " << line_no << ": nombre='" << f[0] << "' burst='" << f[1]
+                  << "' prio='" << f[2] << "' arrival='" << f[3] << "'\n";
     }
     return loaded;
 }
