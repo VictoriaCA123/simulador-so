@@ -6,3 +6,9 @@ Job_ComaFinal, 4, 2, 0,
 
    Job_Espacios ,  3 , 1 , 2   
 ,,,
+Job_LetraBurst, abc, 2, 0
+Job_BurstCero, 0, 2, 0
+Job_Decimal, 3.5, 2, 0
+Job_Prio9, 4, 9, 0
+Job_LlegadaNeg, 4, 2, -1
+Job@Raro, 4, 2, 0

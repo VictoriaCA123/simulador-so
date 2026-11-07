@@ -251,6 +251,19 @@ static Args split_csv(const std::string& line) {
     return fields;
 }
 
+/** Valida un campo numérico del archivo. Si falla, imprime el error con el número de línea. */
+static bool load_int_field(const std::string& s, int min, int max, const char* what,
+                           int line_no, int& out) {
+    ParseStatus st = parse_int(s, min, max, out);
+    if (st == ParseStatus::OK) return true;
+
+    std::cout << "[ERROR DE FORMATO]: Linea " << line_no << ": " << what << " '" << s << "' ";
+    if (st == ParseStatus::NOT_INTEGER) std::cout << "no es un numero entero.";
+    else std::cout << "fuera de rango (" << min << " a " << max << ").";
+    std::cout << " Se omite.\n";
+    return false;
+}
+
 int cli_load_workload(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) return -1;
@@ -271,8 +284,23 @@ int cli_load_workload(const std::string& path) {
                       << " campo(s), se esperaban 4. Se omite.\n";
             continue;
         }
-        std::cout << "[DEBUG] linea " << line_no << ": nombre='" << f[0] << "' burst='" << f[1]
-                  << "' prio='" << f[2] << "' arrival='" << f[3] << "'\n";
+
+       
+        if (!is_valid_name(f[0])) {            
+            std::cout << "[ERROR DE FORMATO]: Linea " << line_no << ": nombre '" << f[0]                      
+                      << "' invalido. Se omite.\n";            
+            continue;        
+        }        
+        
+        int burst = 0, prio = 0, arrival = 0;        
+        
+        if (!load_int_field(f[1], 1, MAX_BURST, "burst", line_no, burst)) continue;        
+        if (!load_int_field(f[2], MIN_PRIORITY, MAX_PRIORITY, "prioridad", line_no, prio)) continue;        
+        if (!load_int_field(f[3], 0, MAX_ARRIVAL, "llegada", line_no, arrival)) continue;        
+        
+        std::cout << "[DEBUG] linea " << line_no << " valida: " << f[0] << " burst=" << burst                  
+                  << " prio=" << prio << " llegada=" << arrival << "\n";
+        
     }
     return loaded;
 }
