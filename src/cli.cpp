@@ -11,8 +11,12 @@
  */
 #include "cli.h"
 
+#include <sys/stat.h>
+
+#include <cerrno>
 #include <fstream>
 #include <iostream>
+#include <vector>
 
 #include "pcb.h"
 #include "report.h"
@@ -85,12 +89,10 @@ static void cmd_create(const Args& a) {
 
 static void cmd_load(const Args& a) {
     if (!check_argc(a, 2, 2, "load <archivo>")) return;
-    int n = cli_load_workload(a[1]);
-    if (n < 0) {
-        err_param("No se pudo abrir el archivo '" + a[1] + "'.");
-        return;
+    int n = cli_load_workload(a[1]);   // imprime sus propios errores
+    if (n > 0) {
+        std::cout << "[OK]: " << n << " proceso(s) cargado(s) desde '" << a[1] << "'.\n";
     }
-    std::cout << "[OK]: " << n << " proceso(s) cargado(s) desde '" << a[1] << "'.\n";
 }
 
 static void cmd_ps(const Args& a) {
@@ -234,6 +236,10 @@ bool cli_execute_line(const std::string& line) {
     return true;
 }
 
+/* ============================== Comando load ============================== */
+
+constexpr int MAX_LOAD_ERRORS_SHOWN = 10;   // evita inundar la pantalla con un archivo basura
+
 /** Separa una línea por comas y aplica trim() a cada campo.
  *  Siempre devuelve (número de comas + 1) campos, incluso si alguno está vacío. */
 static Args split_csv(const std::string& line) {
@@ -251,91 +257,141 @@ static Args split_csv(const std::string& line) {
     return fields;
 }
 
-/** Un proceso leído y validado del archivo, todavía no insertado en el kernel. */
+/** Un proceso leído y validado del archivo, todavía NO insertado en el kernel. */
 struct LoadedJob {
     std::string name;
-    int burst;
-    int prio;
-    int arrival;
+    int burst   = 0;
+    int prio    = 0;
+    int arrival = 0;
 };
 
-/** Valida un campo numérico del archivo. Si falla, imprime el error con el número de línea. */
+/** Valida un campo numérico. Si falla, deja la explicación en `err`. */
 static bool load_int_field(const std::string& s, int min, int max, const char* what,
-                           int line_no, int& out) {
+                           int& out, std::string& err) {
     ParseStatus st = parse_int(s, min, max, out);
     if (st == ParseStatus::OK) return true;
 
-    std::cout << "[ERROR DE FORMATO]: Linea " << line_no << ": " << what << " '" << s << "' ";
-    if (st == ParseStatus::NOT_INTEGER) std::cout << "no es un numero entero.";
-    else std::cout << "fuera de rango (" << min << " a " << max << ").";
-    std::cout << " Se omite.\n";
+    err = std::string(what) + " '" + s + "' ";
+    if (st == ParseStatus::NOT_INTEGER) {
+        err += "no es un numero entero";
+    } else {
+        err += "fuera de rango (" + std::to_string(min) + " a " + std::to_string(max) + ")";
+    }
     return false;
 }
 
-int cli_load_workload(const std::string& path) {
-    std::ifstream file(path);
-    if (!file.is_open()) return -1;
+/** Revisa UNA línea (ya recortada). true = válida y `job` queda lleno; false = `err` explica por qué. */
+static bool parse_load_line(const std::string& line, LoadedJob& job, std::string& err) {
+    if (line.size() > MAX_LINE_LEN) {
+        err = "linea demasiado larga";
+        return false;
+    }
+    Args f = split_csv(line);
+    if (f.size() != 4) {
+        err = "tiene " + std::to_string(f.size()) + " campo(s), se esperaban 4";
+        return false;
+    }
+    if (!is_valid_name(f[0])) {
+        err = "nombre invalido (use 1-" + std::to_string(MAX_NAME_LEN) +
+              " letras, digitos, '_', '-' o '.')";
+        return false;
+    }
+    job.name = f[0];
+    return load_int_field(f[1], 1, MAX_BURST, "burst", job.burst, err) &&
+           load_int_field(f[2], MIN_PRIORITY, MAX_PRIORITY, "prioridad", job.prio, err) &&
+           load_int_field(f[3], 0, MAX_ARRIVAL, "llegada", job.arrival, err);
+}
 
-    std::string raw;     // la línea tal como viene del archivo
-    int line_no = 0;     // número de línea, para los mensajes de error
-    std::vector<LoadedJob> jobs;   // procesos válidos, pendientes de insertar
+/** Comprueba que la ruta exista y sea un archivo normal (no una carpeta ni un dispositivo). */
+static bool check_regular_file(const std::string& path) {
+    struct stat info;
+    if (stat(path.c_str(), &info) != 0) {
+        if (errno == EACCES) {
+            std::cout << "[ERROR]: Sin permiso para acceder a '" << path << "'.\n";
+        } else {
+            std::cout << "[ERROR]: El archivo '" << path << "' no existe.\n";
+        }
+        return false;
+    }
+    if (S_ISDIR(info.st_mode)) {
+        std::cout << "[ERROR]: '" << path << "' es una carpeta, no un archivo.\n";
+        return false;
+    }
+    if (!S_ISREG(info.st_mode)) {
+        std::cout << "[ERROR]: '" << path << "' no es un archivo de texto normal.\n";
+        return false;
+    }
+    return true;
+}
+
+int cli_load_workload(const std::string& path) {
+    // 1) La ruta debe ser un archivo normal que se pueda abrir
+    if (!check_regular_file(path)) return -1;
+
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        std::cout << "[ERROR]: No se pudo abrir '" << path << "' (permisos de lectura).\n";
+        return -1;
+    }
+
+    // 2) Leer y validar TODO el archivo sin tocar el kernel (sin lock)
+    std::vector<LoadedJob> jobs;
+    std::string raw;
+    std::string err;
+    int line_no = 0;
+    int skipped = 0;
 
     while (std::getline(file, raw)) {
         line_no++;
         std::string line = trim(raw);
-
         if (line.empty() || line[0] == '#') continue;   // vacía o comentario
 
-        Args f = split_csv(line);
-        if (f.size() != 4) {
-            std::cout << "[ERROR DE FORMATO]: Linea " << line_no << " tiene " << f.size()
-                      << " campo(s), se esperaban 4. Se omite.\n";
-            continue;
+        LoadedJob job;
+        if (parse_load_line(line, job, err)) {
+            jobs.push_back(job);
+        } else {
+            skipped++;
+            if (skipped <= MAX_LOAD_ERRORS_SHOWN) {
+                std::cout << "[ERROR DE FORMATO]: Linea " << line_no << ": " << err
+                          << ". Se omite.\n";
+            }
         }
-
-        if (!is_valid_name(f[0])) {            
-            std::cout << "[ERROR DE FORMATO]: Linea " << line_no << ": nombre '" << f[0]                      
-                      << "' invalido. Se omite.\n";            
-            continue;        
-        }        
-        
-        int burst = 0, prio = 0, arrival = 0;        
-        
-        if (!load_int_field(f[1], 1, MAX_BURST, "burst", line_no, burst)) continue;        
-        if (!load_int_field(f[2], MIN_PRIORITY, MAX_PRIORITY, "prioridad", line_no, prio)) continue;        
-        if (!load_int_field(f[3], 0, MAX_ARRIVAL, "llegada", line_no, arrival)) continue;        
-        
-        jobs.push_back({f[0], burst, prio, arrival});
+    }
+    if (skipped > MAX_LOAD_ERRORS_SHOWN) {
+        std::cout << "  ... y " << (skipped - MAX_LOAD_ERRORS_SHOWN)
+                  << " error(es) mas que no se muestran.\n";
     }
 
     if (jobs.empty()) {
-        std::cout << "[AVISO]: El archivo no contiene procesos validos.\n";
-        return 0;
+        std::cout << "[ERROR]: '" << path << "' no contiene procesos validos. No se cargo nada.\n";
+        return -1;
     }
 
+    // 3) Insertar todo de una vez bajo el lock (carga atómica: todo o nada)
     std::vector<int> pids;
     {
         KernelLock lock;   // ---- inicio de la sección crítica ----
         int libres = MAX_PROCESSES - static_cast<int>(g_kernel.table.size());
-        
         if (static_cast<int>(jobs.size()) <= libres) {
             for (const LoadedJob& j : jobs) {
                 pids.push_back(kernel_add_process_locked(j.name, j.burst, j.prio, j.arrival));
             }
         }
     }                      // ---- fin: aquí se libera el mutex solo ----
-    
+
+    // 4) Imprimir resultados FUERA del lock
     if (pids.empty()) {
         std::cout << "[ERROR]: No hay espacio para " << jobs.size()
                   << " procesos en la tabla. No se cargo ninguno.\n";
-        return 0;
+        return -1;
     }
-
     for (size_t k = 0; k < pids.size(); ++k) {
         std::cout << "  PID " << pids[k] << " -> " << jobs[k].name
                   << " (llegada en tick " << jobs[k].arrival << ")\n";
     }
-    
+    if (skipped > 0) {
+        std::cout << "[AVISO]: " << skipped << " linea(s) omitida(s) por errores.\n";
+    }
     return static_cast<int>(pids.size());
 }
 

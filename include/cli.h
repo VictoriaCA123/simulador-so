@@ -25,8 +25,13 @@ bool cli_execute_line(const std::string& line);
 /**
  * Carga un archivo de traza (comando load).
  * Formato por línea:  NOMBRE, BURST, PRIORIDAD, ARRIVAL
- * Líneas vacías y las que empiezan por '#' se ignoran.
- * @return cantidad de procesos cargados, o -1 si el archivo no se pudo abrir.
+ * Líneas vacías y las que empiezan por '#' se ignoran; las líneas
+ * inválidas se reportan con su número y se omiten.
+ * La inserción es atómica: se cargan todos los procesos válidos o ninguno.
+ * Imprime sus propios mensajes de error.
+ * @return cantidad de procesos cargados (> 0), o -1 si no se cargó nada
+ *         (ruta inexistente, carpeta, sin permisos, sin procesos válidos
+ *         o sin espacio en la tabla).
  */
 int cli_load_workload(const std::string& path);
 
