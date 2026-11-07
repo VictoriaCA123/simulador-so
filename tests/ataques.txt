@@ -1,0 +1,39 @@
+create
+create BadProcess
+create P1 abc
+create P1 5abc
+create P1 3.5
+create P1 -4
+create P1 0
+create P1 99999999999999999999
+create P1 5 9
+create P1 5 x
+create P1 5 2 extra
+create P@#! 5
+create P1 5 2
+pcb
+pcb abc
+pcb -1
+pcb 0
+pcb 999
+pcb 1 2
+set_sched FIFO
+set_sched rr
+set_sched RR 0
+set_sched RR abc
+set_sched SRTF 3
+set_sched
+set_speed
+set_speed 10
+set_speed 99999
+set_speed rapido
+ps extra
+start now
+load
+load archivo_que_no_existe.txt
+comando_inventado
+
+
+ps
+pcb 1
+help

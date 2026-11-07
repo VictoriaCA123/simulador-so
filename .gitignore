@@ -1,0 +1,5 @@
+build/
+simulador
+*.o
+*.d
+.vscode/
