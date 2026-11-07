@@ -238,14 +238,19 @@ int cli_load_workload(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) return -1;
 
-    // TODO (Integrante 1): por cada línea
-    //   - trim(); saltar vacías y las que empiezan con '#'
-    //   - separar por comas -> exactamente 4 campos (si no: avisar "línea N inválida" y seguir)
-    //   - trim() a cada campo; validar con is_valid_name / parse_int
-    //     (burst 1..MAX_BURST, prioridad 1..5, arrival 0..MAX_ARRIVAL)
-    //   - { KernelLock lock; kernel_add_process_locked(nombre, burst, prio, arrival); }
-    // OJO: archivos editados en Windows traen '\r' al final -> trim() ya lo quita.
-    return 0;
+    std::string raw;     // la línea tal como viene del archivo
+    int line_no = 0;     // número de línea, para los mensajes de error
+    int loaded  = 0;     // cuántos procesos se cargaron bien
+
+    while (std::getline(file, raw)) {
+        line_no++;
+        std::string line = trim(raw);
+
+        if (line.empty() || line[0] == '#') continue;   // vacía o comentario
+
+        std::cout << "[DEBUG] linea " << line_no << ": '" << line << "'\n";
+    }
+    return loaded;
 }
 
 void* cli_thread_main(void* /*arg*/) {
