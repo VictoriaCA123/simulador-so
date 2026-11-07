@@ -251,6 +251,14 @@ static Args split_csv(const std::string& line) {
     return fields;
 }
 
+/** Un proceso leído y validado del archivo, todavía no insertado en el kernel. */
+struct LoadedJob {
+    std::string name;
+    int burst;
+    int prio;
+    int arrival;
+};
+
 /** Valida un campo numérico del archivo. Si falla, imprime el error con el número de línea. */
 static bool load_int_field(const std::string& s, int min, int max, const char* what,
                            int line_no, int& out) {
@@ -270,7 +278,7 @@ int cli_load_workload(const std::string& path) {
 
     std::string raw;     // la línea tal como viene del archivo
     int line_no = 0;     // número de línea, para los mensajes de error
-    int loaded  = 0;     // cuántos procesos se cargaron bien
+    std::vector<LoadedJob> jobs;   // procesos válidos, pendientes de insertar
 
     while (std::getline(file, raw)) {
         line_no++;
@@ -285,7 +293,6 @@ int cli_load_workload(const std::string& path) {
             continue;
         }
 
-       
         if (!is_valid_name(f[0])) {            
             std::cout << "[ERROR DE FORMATO]: Linea " << line_no << ": nombre '" << f[0]                      
                       << "' invalido. Se omite.\n";            
@@ -298,11 +305,38 @@ int cli_load_workload(const std::string& path) {
         if (!load_int_field(f[2], MIN_PRIORITY, MAX_PRIORITY, "prioridad", line_no, prio)) continue;        
         if (!load_int_field(f[3], 0, MAX_ARRIVAL, "llegada", line_no, arrival)) continue;        
         
-        std::cout << "[DEBUG] linea " << line_no << " valida: " << f[0] << " burst=" << burst                  
-                  << " prio=" << prio << " llegada=" << arrival << "\n";
-        
+        jobs.push_back({f[0], burst, prio, arrival});
     }
-    return loaded;
+
+    if (jobs.empty()) {
+        std::cout << "[AVISO]: El archivo no contiene procesos validos.\n";
+        return 0;
+    }
+
+    std::vector<int> pids;
+    {
+        KernelLock lock;   // ---- inicio de la sección crítica ----
+        int libres = MAX_PROCESSES - static_cast<int>(g_kernel.table.size());
+        
+        if (static_cast<int>(jobs.size()) <= libres) {
+            for (const LoadedJob& j : jobs) {
+                pids.push_back(kernel_add_process_locked(j.name, j.burst, j.prio, j.arrival));
+            }
+        }
+    }                      // ---- fin: aquí se libera el mutex solo ----
+    
+    if (pids.empty()) {
+        std::cout << "[ERROR]: No hay espacio para " << jobs.size()
+                  << " procesos en la tabla. No se cargo ninguno.\n";
+        return 0;
+    }
+
+    for (size_t k = 0; k < pids.size(); ++k) {
+        std::cout << "  PID " << pids[k] << " -> " << jobs[k].name
+                  << " (llegada en tick " << jobs[k].arrival << ")\n";
+    }
+    
+    return static_cast<int>(pids.size());
 }
 
 void* cli_thread_main(void* /*arg*/) {
