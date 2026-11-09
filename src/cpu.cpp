@@ -8,6 +8,8 @@
  */
 #include "cpu.h"
 
+#include <algorithm>
+#include <iterator>
 #include <unistd.h>
 
 #include "pcb.h"
@@ -47,31 +49,135 @@ void* cpu_thread_main(void* /*arg*/) {
 }
 
 void cpu_admit_arrivals_locked() {
-    // TODO (Integrante 2): recorrer g_kernel.table; cada PCB en NEW con
-    // arrival_time <= g_kernel.clock_ticks -> state = READY y
-    // g_kernel.ready_queue.push_back(pid). Ojo con el orden de llegada.
+    std::vector<int> arriving_pids;
+
+    for (const PCB& process : g_kernel.table) {
+        if (process.state == ProcState::NEW &&
+            process.arrival_time <= g_kernel.clock_ticks) {
+            arriving_pids.push_back(process.pid);
+        }
+    }
+
+    std::sort(arriving_pids.begin(), arriving_pids.end(), [](int lhs, int rhs) {
+        const PCB& left = g_kernel.table[lhs - 1];
+        const PCB& right = g_kernel.table[rhs - 1];
+
+        if (left.arrival_time != right.arrival_time) {
+            return left.arrival_time < right.arrival_time;
+        }
+        return left.pid < right.pid;
+    });
+
+    for (int pid : arriving_pids) {
+        PCB* process = kernel_find_locked(pid);
+        process->state = ProcState::READY;
+        g_kernel.ready_queue.push_back(pid);
+    }
 }
 
 void cpu_tick_locked() {
-    // TODO (Integrante 2): según g_kernel.algo
-    //  1. Si hay running_pid, decidir si se desapropia:
-    //       RR   -> quantum_used == g_kernel.quantum  => vuelve al final de la cola
-    //       SRTF -> hay en READY uno con menor burst_remaining => vuelve a la cola
-    //  2. Si la CPU está libre, elegir con cpu_pick_next_*_locked() y sacarlo de la cola.
-    //  3. Si es su primera vez en CPU: first_run_time = clock_ticks.
-    //  4. burst_remaining--, quantum_used++, busy_ticks++.
-    //  5. waiting_time++ a todos los que están en READY.
-    //  6. Si burst_remaining == 0: TERMINATED, finish_time = clock_ticks + 1, running_pid = NO_PID.
-    //  7. gantt_record_locked(pid ejecutado o NO_PID si IDLE).
-    gantt_record_locked(NO_PID);  // placeholder: por ahora la CPU siempre está IDLE
+    PCB* running = kernel_find_locked(g_kernel.running_pid);
+    bool preempt = false;
+
+    if (running != nullptr) {
+        if (g_kernel.algo == SchedAlgo::RR) {
+            preempt = running->quantum_used >= g_kernel.quantum;
+        } else {
+            for (int pid : g_kernel.ready_queue) {
+                PCB* ready = kernel_find_locked(pid);
+                if (ready != nullptr &&
+                    ready->burst_remaining < running->burst_remaining) {
+                    preempt = true;
+                    break;
+                }
+            }
+        }
+
+        if (preempt) {
+            running->state = ProcState::READY;
+            running->quantum_used = 0;
+            g_kernel.ready_queue.push_back(running->pid);
+            g_kernel.running_pid = NO_PID;
+        }
+    }
+
+    if (g_kernel.running_pid == NO_PID) {
+        g_kernel.running_pid = g_kernel.algo == SchedAlgo::RR
+            ? cpu_pick_next_rr_locked()
+            : cpu_pick_next_srtf_locked();
+    }
+
+    const int executed_pid = g_kernel.running_pid;
+    PCB* process = kernel_find_locked(executed_pid);
+    if (process == nullptr) {
+        for (int pid : g_kernel.ready_queue) {
+            PCB* ready = kernel_find_locked(pid);
+            if (ready != nullptr && ready->state == ProcState::READY) {
+                ready->waiting_time++;
+            }
+        }
+        gantt_record_locked(NO_PID);
+        return;
+    }
+
+    process->state = ProcState::RUNNING;
+    if (process->first_run_time < 0) {
+        process->first_run_time = g_kernel.clock_ticks;
+    }
+    process->burst_remaining--;
+    process->quantum_used++;
+    g_kernel.busy_ticks++;
+
+    for (int pid : g_kernel.ready_queue) {
+        PCB* ready = kernel_find_locked(pid);
+        if (ready != nullptr && ready->state == ProcState::READY) {
+            ready->waiting_time++;
+        }
+    }
+
+    if (process->burst_remaining <= 0) {
+        process->state = ProcState::TERMINATED;
+        process->finish_time = g_kernel.clock_ticks + 1;
+        g_kernel.running_pid = NO_PID;
+    }
+
+    gantt_record_locked(executed_pid);
 }
 
 int cpu_pick_next_rr_locked() {
-    // TODO (Integrante 2)
-    return NO_PID;
+    if (g_kernel.ready_queue.empty()) return NO_PID;
+
+    const int pid = g_kernel.ready_queue.front();
+    g_kernel.ready_queue.pop_front();
+    PCB* process = kernel_find_locked(pid);
+    if (process != nullptr) {
+        process->state = ProcState::RUNNING;
+    }
+    return pid;
 }
 
 int cpu_pick_next_srtf_locked() {
-    // TODO (Integrante 2): menor burst_remaining; desempate por arrival_time y luego PID.
-    return NO_PID;
+    if (g_kernel.ready_queue.empty()) return NO_PID;
+
+    auto best = g_kernel.ready_queue.begin();
+    for (auto candidate = std::next(best); candidate != g_kernel.ready_queue.end(); ++candidate) {
+        const PCB* current = kernel_find_locked(*best);
+        const PCB* next = kernel_find_locked(*candidate);
+        if (current == nullptr ||
+            (next != nullptr &&
+             (next->burst_remaining < current->burst_remaining ||
+              (next->burst_remaining == current->burst_remaining &&
+               (next->arrival_time < current->arrival_time ||
+                (next->arrival_time == current->arrival_time && next->pid < current->pid)))))) {
+            best = candidate;
+        }
+    }
+
+    const int pid = *best;
+    g_kernel.ready_queue.erase(best);
+    PCB* process = kernel_find_locked(pid);
+    if (process != nullptr) {
+        process->state = ProcState::RUNNING;
+    }
+    return pid;
 }
