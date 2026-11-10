@@ -1,17 +1,7 @@
-/**
- * @file cpu.cpp
- * @brief Hilo Motor de Scheduling.
- * Responsable: Integrante 2.
- *
- * cpu_thread_main ya está terminado (infraestructura de hilos).
- * Lo que falta programar está marcado con TODO.
- */
 #include "cpu.h"
-
 #include <algorithm>
 #include <iterator>
 #include <unistd.h>
-
 #include "pcb.h"
 #include "report.h"
 
@@ -27,6 +17,7 @@ static void cpu_sleep_interruptible(int ms) {
     }
 }
 
+//La entrada del hilo CPU. Es un bucle infinito de ticks simulados hasta que se solicita la salida.
 void* cpu_thread_main(void* /*arg*/) {
     while (true) {
         int sleep_ms;
@@ -36,18 +27,22 @@ void* cpu_thread_main(void* /*arg*/) {
             while (!g_kernel.cpu_running && !g_kernel.exit_requested) {
                 pthread_cond_wait(&g_kernel.cond_state, &g_kernel.mutex);
             }
-            if (g_kernel.exit_requested) break;   // KernelLock libera al salir
+            if (g_kernel.exit_requested) break;   
 
             cpu_admit_arrivals_locked();
             cpu_tick_locked();
             g_kernel.clock_ticks++;
             sleep_ms = g_kernel.ms_per_tick;
         }
-        cpu_sleep_interruptible(sleep_ms);   // SIEMPRE fuera del lock
+        cpu_sleep_interruptible(sleep_ms);   
     }
     return nullptr;
 }
 
+
+// Cambia el estado de los procesos NEW a READY. 
+// Insetandolos en una lista de espera (ready_queue) en orden de llegada y PID.
+// Se requiere que el mutex del kernel esté bloqueado antes de llamar a esta función.
 void cpu_admit_arrivals_locked() {
     std::vector<int> arriving_pids;
 
@@ -75,6 +70,10 @@ void cpu_admit_arrivals_locked() {
     }
 }
 
+
+// Simula un tick de CPU y detiene el proceso en ejecución si es necesario por RR o SRTF.
+// Actualiza los tiempos de espera de los procesos en READY y registra el tick en el Gantt.
+// Tambien al terminar marca el proceso como TERMINATED y actualiza su tiempo de finalización.
 void cpu_tick_locked() {
     PCB* running = kernel_find_locked(g_kernel.running_pid);
     bool preempt = false;
@@ -144,6 +143,8 @@ void cpu_tick_locked() {
     gantt_record_locked(executed_pid);
 }
 
+
+// Elige el siguiente PID según Round Robin (frente de la cola).
 int cpu_pick_next_rr_locked() {
     if (g_kernel.ready_queue.empty()) return NO_PID;
 
@@ -156,6 +157,7 @@ int cpu_pick_next_rr_locked() {
     return pid;
 }
 
+// Elige el siguiente PID según SRTF (menor ráfaga restante).
 int cpu_pick_next_srtf_locked() {
     if (g_kernel.ready_queue.empty()) return NO_PID;
 
