@@ -1,7 +1,7 @@
 /**
  * @file cli.cpp
  * @brief Hilo CLI: lee comandos, valida y despacha.
- * Responsable: Integrante 1.
+ * Responsable: Victoria.
  *
  * PATRÓN OBLIGATORIO para cada comando (ver cmd_create como modelo):
  *   1. check_argc(...)      -> cantidad de argumentos
@@ -29,7 +29,7 @@
 
 constexpr size_t MAX_LINE_LEN = 512;
 
-/* ======================= Mensajes de error estándar ======================= */
+/* ======================= Mensajes de error  ======================= */
 
 static void err_syntax(const std::string& msg, const char* usage) {
     std::cout << "[ERROR DE SINTAXIS]: " << msg << "\nUso correcto: " << usage << "\n";
@@ -145,6 +145,10 @@ static void cmd_set_sched(const Args& a) {
 
     {
         KernelLock lock;
+        // El proceso en ejecución empieza un turno nuevo con la nueva política.
+        PCB* running = kernel_find_locked(g_kernel.running_pid);
+        if (running != nullptr) running->quantum_used = 0;
+
         g_kernel.algo = algo;
         if (algo == SchedAlgo::RR) g_kernel.quantum = quantum;
     }
@@ -280,7 +284,7 @@ bool cli_execute_line(const std::string& line) {
         }
     }
 
-    // No coincide exactamente: ¿es un comando válido escrito con mayúsculas?
+    
     std::string lower = args[0];
     std::transform(lower.begin(), lower.end(), lower.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -393,7 +397,7 @@ int cli_load_workload(const std::string& path) {
         return -1;
     }
 
-    // 2) Leer y validar TODO el archivo sin tocar el kernel (sin lock)
+    // 2) Leer y validar TODO el archivo sin tocar el kernel 
     std::vector<LoadedJob> jobs;
     std::string raw;
     std::string err;
@@ -472,11 +476,11 @@ static void cli_install_signal_handlers() {
     struct sigaction sa;
     sa.sa_handler = on_interrupt;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;   // getline() continúa leyendo tras la señal
+    sa.sa_flags = SA_RESTART;   
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGQUIT, &sa, nullptr);
 
-    // Si la salida va a un pipe que se cierra (./simulador | head), no morir.
+    
     signal(SIGPIPE, SIG_IGN);
 }
 
@@ -486,7 +490,7 @@ void* cli_thread_main(void* /*arg*/) {
     std::string line;
     while (true) {
         std::cout << "> " << std::flush;
-        if (!std::getline(std::cin, line)) {   // EOF (Ctrl+D) o error de lectura
+        if (!std::getline(std::cin, line)) {   
             std::cout << "\n[INFO]: Fin de entrada. Cerrando simulador...\n";
             break;
         }

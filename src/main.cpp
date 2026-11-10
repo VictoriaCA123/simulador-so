@@ -26,7 +26,7 @@ int main() {
     }
 
     std::cout << "==================================================\n"
-              << "  Simulador de Kernel - Shell & Scheduling Engine\n"
+              << "  Simulador de Kernel - Consola y Motor de Planificación\n"
               << "  Escriba 'help' para ver los comandos.\n"
               << "==================================================\n";
 
