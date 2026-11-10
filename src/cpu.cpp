@@ -41,7 +41,7 @@ void* cpu_thread_main(void* /*arg*/) {
 
 
 // Cambia el estado de los procesos NEW a READY. 
-// Insetandolos en una lista de espera (ready_queue) en orden de llegada y PID.
+// Insertarlos en una lista de espera (ready_queue) en orden de llegada y PID.
 // Se requiere que el mutex del kernel esté bloqueado antes de llamar a esta función.
 void cpu_admit_arrivals_locked() {
     std::vector<int> arriving_pids;
