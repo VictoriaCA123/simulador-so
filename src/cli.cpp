@@ -1,13 +1,13 @@
 /**
  * @file cli.cpp
  * @brief Hilo CLI: lee comandos, valida y despacha.
- * Responsable: Victoria.
+ * 
  *
- * PATRÓN OBLIGATORIO para cada comando (ver cmd_create como modelo):
- *   1. check_argc(...)      -> cantidad de argumentos
- *   2. get_int_arg(...)     -> tipo y rango de cada número
- *   3. { KernelLock lock; ... }  -> recién ahí tocar g_kernel
- *   4. Imprimir [OK] o [ERROR ...] FUERA del lock si es posible.
+ * 
+ *   
+ *   
+ *   
+ * 
  */
 #include "cli.h"
 

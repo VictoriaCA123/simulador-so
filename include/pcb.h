@@ -2,73 +2,126 @@
  * @file pcb.h
  * @brief Estructuras compartidas del kernel simulado: PCB, colas y mutex.
  *
- * REGLAS DE ORO DE CONCURRENCIA (leer antes de tocar nada):
- *  1. TODO acceso (lectura o escritura) a g_kernel se hace con el mutex tomado.
- *     Forma recomendada:   { KernelLock lock;  ...código... }   // se libera solo
- *  2. Las funciones cuyo nombre termina en "_locked" ASUMEN que quien las llama
- *     ya tiene el mutex. Nunca tomen el lock dentro de una función _locked
- *     (sería un doble lock = deadlock).
- *  3. Las colas guardan PIDs (int), NO punteros. Un PCB* obtenido con
- *     kernel_find_locked() solo es válido mientras se tenga el lock.
- *  4. Nunca hacer sleep/usleep ni esperar input (getline) con el lock tomado.
- *  5. El hilo CPU NO imprime en pantalla; solo el hilo CLI imprime.
+ * 
  *
- * Responsable: Integrante 3 (Concurrencia, Estado y Métricas).
  */
 #ifndef PCB_H
 #define PCB_H
 
 #include <pthread.h>
+
 #include <deque>
 #include <string>
 #include <vector>
 
-// Límites defensivos del sistema
-constexpr int MAX_PROCESSES = 1000;
-constexpr int MAX_NAME_LEN  = 32;
-constexpr int MAX_BURST     = 100000;
-constexpr int MIN_PRIORITY  = 1;
+/* ------------------------------------------------------------------ */
+/* Límites defensivos: cualquier valor fuera de rango se rechaza en CLI */
+/* ------------------------------------------------------------------ */
+constexpr int MAX_PROCESSES     = 1000;   ///< Tamaño máximo de la tabla
+constexpr int MAX_NAME_LEN      = 32;     ///< Largo máximo del nombre
+constexpr int MAX_BURST         = 100000; ///< Ráfaga máxima aceptada
+constexpr int MIN_PRIORITY      = 1;
+constexpr int MAX_PRIORITY      = 5;
+constexpr int DEFAULT_PRIORITY  = 3;
+constexpr int DEFAULT_QUANTUM   = 2;
+constexpr int MAX_QUANTUM       = 1000;
+constexpr int MIN_SPEED_MS      = 50;
+constexpr int MAX_SPEED_MS      = 5000;
+constexpr int DEFAULT_SPEED_MS  = 1000;
+constexpr int MAX_ARRIVAL       = 1000000;
+constexpr int NO_PID            = -1;     ///< "No hay proceso" / CPU IDLE
 
-// Estados del proceso según la especificación de la cátedra
-enum class ProcessState {
-    NEW,
-    READY,
-    RUNNING,
-    BLOCKED,
-    TERMINATED
-};
+/** Estados del ciclo de vida de un proceso. */
+enum class ProcState { NEW, READY, RUNNING, BLOCKED, TERMINATED };
 
-// Conversión de estado a string para los reportes y la CLI
-inline std::string stateToString(ProcessState state) {
-    switch (state) {
-        case ProcessState::NEW: return "NEW";
-        case ProcessState::READY: return "READY";
-        case ProcessState::RUNNING: return "RUNNING";
-        case ProcessState::BLOCKED: return "BLOCKED";
-        case ProcessState::TERMINATED: return "TERMINATED";
-        default: return "UNKNOWN";
-    }
-}
+/** Políticas de planificación soportadas. */
+enum class SchedAlgo { RR, SRTF };
 
-// Estructura del Process Control Block (PCB)
+/** Process Control Block. Todos los tiempos se miden en ticks. */
 struct PCB {
-    int pid;                  // Identificador único autoincremental
-    std::string name;         // Nombre del proceso
-    ProcessState state;       // Estado actual
-    int burst_time;           // Ráfaga inicial total
-    int remaining_time;       // Ráfaga restante
-    int priority;             // Prioridad (1 a 5)
-    int arrival_time;         // Tiempo de llegada (ticks)
-    
-    // Métricas de desempeño exigidas
-    int waiting_time;         // Tiempo de espera acumulado (WT)
-    int turnaround_time;      // Tiempo de retorno (TAT)
-    int response_time;        // Tiempo de respuesta (RT)
-    bool has_responded;       // Bandera para el primer cálculo de RT
-    int completion_time;      // Instante de finalización
+    int         pid             = 0;
+    std::string name;
+    ProcState   state           = ProcState::NEW;
+    int         priority        = DEFAULT_PRIORITY;
+
+    int arrival_time    = 0;  
+    int burst_initial   = 0;   
+    int burst_remaining = 0;   
+
+    int first_run_time  = -1;  
+    int finish_time     = -1;  
+    int waiting_time    = 0;   
+    int quantum_used    = 0;   
 };
 
-// Declaración de función auxiliar de creación
-PCB createProcess(int pid, const std::string& name, int burst_time, int priority, int arrival_time);
+/** Un tramo del diagrama de Gantt: [start, end) ejecutó pid (NO_PID = IDLE). */
+struct GanttEntry {
+    int start;
+    int end;
+    int pid;
+};
+
+/** Estado global compartido entre el hilo CLI y el hilo CPU. */
+struct Kernel {
+    pthread_mutex_t mutex;        
+    pthread_cond_t  cond_state;   
+    std::vector<PCB>        table;        
+    std::deque<int>         ready_queue;  
+    int                     running_pid = NO_PID;
+    std::vector<GanttEntry> gantt;
+
+    int clock_ticks = 0;   
+    int busy_ticks  = 0;   
+
+    SchedAlgo algo        = SchedAlgo::RR;
+    int       quantum     = DEFAULT_QUANTUM;
+    int       ms_per_tick = DEFAULT_SPEED_MS;
+
+    bool cpu_running    = false;  
+    bool exit_requested = false;  
+    int  next_pid       = 1;
+};
+
+/** Única instancia global (definida en pcb.cpp). */
+extern Kernel g_kernel;
+
+
+class KernelLock {
+public:
+    KernelLock()  { pthread_mutex_lock(&g_kernel.mutex); }
+    ~KernelLock() { pthread_mutex_unlock(&g_kernel.mutex); }
+    KernelLock(const KernelLock&)            = delete;
+    KernelLock& operator=(const KernelLock&) = delete;
+};
+
+
+
+/** Inicializa mutex, variable de condición y tabla. false si falla. */
+bool kernel_init();
+
+/** Destruye mutex y condición. Llamar solo cuando ya no hay hilos vivos. */
+void kernel_destroy();
+
+/** Pide a todos los hilos que terminen (toma el lock internamente). Idempotente. */
+void kernel_request_shutdown();
+
+/** Texto del estado tal como lo exige el enunciado (READY, RUNNING...). */
+const char* state_to_string(ProcState s);
+
+/** "RR" o "SRTF". */
+const char* algo_to_string(SchedAlgo a);
+
+/**
+ * Crea un PCB nuevo. 
+ * @return PID asignado, o NO_PID si la tabla está llena.
+ * REQUIERE el lock.
+ */
+int kernel_add_process_locked(const std::string& name, int burst,
+                              int priority, int arrival);
+
+/**
+ * Busca un proceso por PID. nullptr si no existe.
+ */
+PCB* kernel_find_locked(int pid);
 
 #endif // PCB_H
